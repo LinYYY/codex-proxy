@@ -166,26 +166,28 @@ describe("AccountPool", () => {
       pool.addAccount("token-aaa");
 
       const acquired = pool.acquire()!;
-      pool.release(acquired.entryId, { input_tokens: 100, output_tokens: 50 });
+      pool.release(acquired.entryId, { input_tokens: 100, output_tokens: 50, cached_tokens: 40 });
 
       const accounts = pool.getAccounts();
       expect(accounts[0].usage.request_count).toBe(1);
       expect(accounts[0].usage.input_tokens).toBe(100);
       expect(accounts[0].usage.output_tokens).toBe(50);
+      expect(accounts[0].usage.cache_read_input_tokens).toBe(40);
     });
 
     it("increments counters on repeated releases", () => {
       pool.addAccount("token-aaa");
 
       const a1 = pool.acquire()!;
-      pool.release(a1.entryId, { input_tokens: 100, output_tokens: 50 });
+      pool.release(a1.entryId, { input_tokens: 100, output_tokens: 50, cached_tokens: 20 });
       const a2 = pool.acquire()!;
-      pool.release(a2.entryId, { input_tokens: 200, output_tokens: 100 });
+      pool.release(a2.entryId, { input_tokens: 200, output_tokens: 100, cached_tokens: 30 });
 
       const accounts = pool.getAccounts();
       expect(accounts[0].usage.request_count).toBe(2);
       expect(accounts[0].usage.input_tokens).toBe(300);
       expect(accounts[0].usage.output_tokens).toBe(150);
+      expect(accounts[0].usage.cache_read_input_tokens).toBe(50);
     });
   });
 

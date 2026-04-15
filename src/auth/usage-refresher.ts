@@ -13,6 +13,7 @@ import type { AccountPool } from "./account-pool.js";
 import type { UsageStatsStore } from "./usage-stats.js";
 
 const INITIAL_DELAY_MS = 3_000;
+const DEFAULT_SNAPSHOT_INTERVAL_MIN = 5;
 
 export class SnapshotTimer {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -28,18 +29,25 @@ export class SnapshotTimer {
   start(): void {
     this.stopped = false;
     const config = getConfig();
-    const intervalMin = config.quota.refresh_interval_minutes;
+    const intervalMin = config.quota.refresh_interval_minutes > 0
+      ? config.quota.refresh_interval_minutes
+      : DEFAULT_SNAPSHOT_INTERVAL_MIN;
 
-    if (intervalMin === 0) {
-      console.log("[SnapshotTimer] Disabled (refresh_interval_minutes = 0)");
-      return;
-    }
+    // Seed the history file immediately so the dashboard can start building
+    // a series even when background quota polling is disabled.
+    this.usageStats.recordSnapshot(this.pool);
 
     this.timer = setTimeout(() => {
       this.tick();
     }, INITIAL_DELAY_MS);
 
-    console.log(`[SnapshotTimer] Recording snapshots every ${intervalMin}min`);
+    if (config.quota.refresh_interval_minutes === 0) {
+      console.log(
+        `[SnapshotTimer] quota.refresh_interval_minutes=0; usage-history snapshots continue every ${intervalMin}min`,
+      );
+    } else {
+      console.log(`[SnapshotTimer] Recording snapshots every ${intervalMin}min`);
+    }
   }
 
   stop(): void {
@@ -62,7 +70,10 @@ export class SnapshotTimer {
   private scheduleNext(): void {
     if (this.stopped) return;
     const config = getConfig();
-    const intervalMs = jitter(config.quota.refresh_interval_minutes * 60 * 1000, 0.15);
+    const intervalMin = config.quota.refresh_interval_minutes > 0
+      ? config.quota.refresh_interval_minutes
+      : DEFAULT_SNAPSHOT_INTERVAL_MIN;
+    const intervalMs = jitter(intervalMin * 60 * 1000, 0.15);
     this.timer = setTimeout(() => this.tick(), intervalMs);
   }
 }

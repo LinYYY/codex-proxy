@@ -7,6 +7,7 @@
   --primary-hover: 14 140 46;
   --chart-blue: #3b82f6;
   --chart-green: #10b981;
+  --chart-violet: #8b5cf6;
   --chart-amber: #f59e0b;
   color-scheme: light;
 }
@@ -16,6 +17,7 @@
   --primary-hover: 14 140 108;
   --chart-blue: #60a5fa;
   --chart-green: #34d399;
+  --chart-violet: #a78bfa;
   --chart-amber: #fbbf24;
   color-scheme: dark;
 }

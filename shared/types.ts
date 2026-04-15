@@ -29,9 +29,11 @@ export interface Account {
     request_count?: number;
     input_tokens?: number;
     output_tokens?: number;
+    cache_read_input_tokens?: number;
     window_request_count?: number;
     window_input_tokens?: number;
     window_output_tokens?: number;
+    window_cache_read_input_tokens?: number;
   };
   quota?: AccountQuota;
   quotaFetchedAt?: string | null;
