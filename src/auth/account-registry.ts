@@ -304,7 +304,11 @@ export class AccountRegistry {
   // ── Quota / usage mutations ───────────────────────────────────────
 
   /** Record request usage on release (called by lifecycle). */
-  recordUsage(entryId: string, usage?: { input_tokens?: number; output_tokens?: number }): void {
+  recordUsage(entryId: string, usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cached_tokens?: number;
+  }): void {
     const entry = this.accounts.get(entryId);
     if (!entry) return;
 
@@ -313,11 +317,14 @@ export class AccountRegistry {
     if (usage) {
       entry.usage.input_tokens += usage.input_tokens ?? 0;
       entry.usage.output_tokens += usage.output_tokens ?? 0;
+      entry.usage.cache_read_input_tokens = (entry.usage.cache_read_input_tokens ?? 0) + (usage.cached_tokens ?? 0);
     }
     entry.usage.window_request_count = (entry.usage.window_request_count ?? 0) + 1;
     if (usage) {
       entry.usage.window_input_tokens = (entry.usage.window_input_tokens ?? 0) + (usage.input_tokens ?? 0);
       entry.usage.window_output_tokens = (entry.usage.window_output_tokens ?? 0) + (usage.output_tokens ?? 0);
+      entry.usage.window_cache_read_input_tokens =
+        (entry.usage.window_cache_read_input_tokens ?? 0) + (usage.cached_tokens ?? 0);
     }
     this.schedulePersist();
   }
@@ -356,6 +363,7 @@ export class AccountRegistry {
         entry.usage.window_request_count = 0;
         entry.usage.window_input_tokens = 0;
         entry.usage.window_output_tokens = 0;
+        entry.usage.window_cache_read_input_tokens = 0;
         entry.usage.window_counters_reset_at = new Date().toISOString();
       }
     }
@@ -380,6 +388,7 @@ export class AccountRegistry {
       window_request_count: 0,
       window_input_tokens: 0,
       window_output_tokens: 0,
+      window_cache_read_input_tokens: 0,
       window_counters_reset_at: new Date().toISOString(),
       limit_window_seconds: entry.usage.limit_window_seconds ?? null,
     };
@@ -408,6 +417,7 @@ export class AccountRegistry {
       entry.usage.window_request_count = 0;
       entry.usage.window_input_tokens = 0;
       entry.usage.window_output_tokens = 0;
+      entry.usage.window_cache_read_input_tokens = 0;
       entry.usage.window_counters_reset_at = now.toISOString();
       const windowSec = entry.usage.limit_window_seconds;
       if (windowSec && windowSec > 0) {

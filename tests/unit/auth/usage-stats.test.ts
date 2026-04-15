@@ -32,6 +32,7 @@ function createMockPool(entries: Array<{
   status: string;
   input_tokens: number;
   output_tokens: number;
+  cache_read_input_tokens?: number;
   request_count: number;
 }>): AccountPool {
   return {
@@ -42,6 +43,7 @@ function createMockPool(entries: Array<{
         usage: {
           input_tokens: e.input_tokens,
           output_tokens: e.output_tokens,
+          cache_read_input_tokens: e.cache_read_input_tokens ?? 0,
           request_count: e.request_count,
         },
       })),
@@ -61,8 +63,8 @@ describe("UsageStatsStore", () => {
     it("records cumulative totals from all accounts", () => {
       const pool = createMockPool([
         { status: "active", input_tokens: 1000, output_tokens: 200, request_count: 5 },
-        { status: "active", input_tokens: 500, output_tokens: 100, request_count: 3 },
-        { status: "expired", input_tokens: 300, output_tokens: 50, request_count: 2 },
+        { status: "active", input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 200, request_count: 3 },
+        { status: "expired", input_tokens: 300, output_tokens: 50, cache_read_input_tokens: 50, request_count: 2 },
       ]);
 
       store.recordSnapshot(pool);
@@ -75,6 +77,7 @@ describe("UsageStatsStore", () => {
       expect(saved[0].totals).toEqual({
         input_tokens: 1800,
         output_tokens: 350,
+        cache_read_input_tokens: 250,
         request_count: 10,
         active_accounts: 2,
       });
@@ -88,6 +91,7 @@ describe("UsageStatsStore", () => {
       expect(persistence.saved[0].totals).toEqual({
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_input_tokens: 0,
         request_count: 0,
         active_accounts: 0,
       });
@@ -97,14 +101,15 @@ describe("UsageStatsStore", () => {
   describe("getSummary", () => {
     it("returns live totals from pool when no baseline", () => {
       const pool = createMockPool([
-        { status: "active", input_tokens: 1000, output_tokens: 200, request_count: 5 },
-        { status: "disabled", input_tokens: 500, output_tokens: 100, request_count: 3 },
+        { status: "active", input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 300, request_count: 5 },
+        { status: "disabled", input_tokens: 500, output_tokens: 100, cache_read_input_tokens: 100, request_count: 3 },
       ]);
 
       const summary = store.getSummary(pool);
       expect(summary).toEqual({
         total_input_tokens: 1500,
         total_output_tokens: 300,
+        total_cache_read_input_tokens: 400,
         total_request_count: 8,
         total_accounts: 2,
         active_accounts: 1,
@@ -115,17 +120,19 @@ describe("UsageStatsStore", () => {
       persistence = createMockPersistence([], {
         input_tokens: 10000,
         output_tokens: 2000,
+        cache_read_input_tokens: 3000,
         request_count: 100,
       });
       store = new UsageStatsStore(persistence);
 
       const pool = createMockPool([
-        { status: "active", input_tokens: 500, output_tokens: 50, request_count: 5 },
+        { status: "active", input_tokens: 500, output_tokens: 50, cache_read_input_tokens: 100, request_count: 5 },
       ]);
 
       const summary = store.getSummary(pool);
       expect(summary.total_input_tokens).toBe(10500);
       expect(summary.total_output_tokens).toBe(2050);
+      expect(summary.total_cache_read_input_tokens).toBe(3100);
       expect(summary.total_request_count).toBe(105);
     });
   });
@@ -136,7 +143,7 @@ describe("UsageStatsStore", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date(now - 3600_000).toISOString(),
-          totals: { input_tokens: 10000, output_tokens: 2000, request_count: 100, active_accounts: 5 },
+          totals: { input_tokens: 10000, output_tokens: 2000, cache_read_input_tokens: 4000, request_count: 100, active_accounts: 5 },
         },
       ];
 
@@ -144,7 +151,7 @@ describe("UsageStatsStore", () => {
       store = new UsageStatsStore(persistence);
 
       const pool = createMockPool([
-        { status: "active", input_tokens: 500, output_tokens: 50, request_count: 5 },
+        { status: "active", input_tokens: 500, output_tokens: 50, cache_read_input_tokens: 100, request_count: 5 },
       ]);
 
       store.recordSnapshot(pool);
@@ -152,12 +159,14 @@ describe("UsageStatsStore", () => {
       expect(store.currentBaseline).toEqual({
         input_tokens: 9500,
         output_tokens: 1950,
+        cache_read_input_tokens: 3900,
         request_count: 95,
       });
 
       const lastSnapshot = persistence.saved[persistence.saved.length - 1];
       expect(lastSnapshot.totals.input_tokens).toBe(10000);
       expect(lastSnapshot.totals.output_tokens).toBe(2000);
+      expect(lastSnapshot.totals.cache_read_input_tokens).toBe(4000);
       expect(lastSnapshot.totals.request_count).toBe(100);
     });
 
@@ -167,12 +176,13 @@ describe("UsageStatsStore", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date(now - 3600_000).toISOString(),
-          totals: { input_tokens: 15000, output_tokens: 3000, request_count: 150, active_accounts: 3 },
+          totals: { input_tokens: 15000, output_tokens: 3000, cache_read_input_tokens: 7000, request_count: 150, active_accounts: 3 },
         },
       ];
       const existingBaseline: UsageBaseline = {
         input_tokens: 5000,
         output_tokens: 1000,
+        cache_read_input_tokens: 2000,
         request_count: 50,
       };
 
@@ -180,13 +190,14 @@ describe("UsageStatsStore", () => {
       store = new UsageStatsStore(persistence);
 
       const pool = createMockPool([
-        { status: "active", input_tokens: 200, output_tokens: 20, request_count: 2 },
+        { status: "active", input_tokens: 200, output_tokens: 20, cache_read_input_tokens: 100, request_count: 2 },
       ]);
 
       store.recordSnapshot(pool);
 
       expect(store.currentBaseline.input_tokens).toBe(14800);
       expect(store.currentBaseline.output_tokens).toBe(2980);
+      expect(store.currentBaseline.cache_read_input_tokens).toBe(6900);
       expect(store.currentBaseline.request_count).toBe(148);
     });
 
@@ -195,7 +206,7 @@ describe("UsageStatsStore", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date(now - 3600_000).toISOString(),
-          totals: { input_tokens: 1000, output_tokens: 200, request_count: 10, active_accounts: 2 },
+          totals: { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 300, request_count: 10, active_accounts: 2 },
         },
       ];
 
@@ -203,7 +214,7 @@ describe("UsageStatsStore", () => {
       store = new UsageStatsStore(persistence);
 
       const pool = createMockPool([
-        { status: "active", input_tokens: 1500, output_tokens: 300, request_count: 15 },
+        { status: "active", input_tokens: 1500, output_tokens: 300, cache_read_input_tokens: 500, request_count: 15 },
       ]);
 
       store.recordSnapshot(pool);
@@ -211,6 +222,7 @@ describe("UsageStatsStore", () => {
       expect(store.currentBaseline).toEqual({
         input_tokens: 0,
         output_tokens: 0,
+        cache_read_input_tokens: 0,
         request_count: 0,
       });
     });
@@ -220,7 +232,7 @@ describe("UsageStatsStore", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date(now - 3600_000).toISOString(),
-          totals: { input_tokens: 5000, output_tokens: 500, request_count: 50, active_accounts: 1 },
+          totals: { input_tokens: 5000, output_tokens: 500, cache_read_input_tokens: 2500, request_count: 50, active_accounts: 1 },
         },
       ];
 
@@ -228,7 +240,7 @@ describe("UsageStatsStore", () => {
       store = new UsageStatsStore(persistence);
 
       const pool = createMockPool([
-        { status: "active", input_tokens: 100, output_tokens: 10, request_count: 1 },
+        { status: "active", input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 50, request_count: 1 },
       ]);
 
       store.recordSnapshot(pool);
@@ -236,6 +248,7 @@ describe("UsageStatsStore", () => {
       expect(persistence.savedBaseline).toEqual({
         input_tokens: 4900,
         output_tokens: 490,
+        cache_read_input_tokens: 2450,
         request_count: 49,
       });
     });
@@ -244,6 +257,7 @@ describe("UsageStatsStore", () => {
       const baseline: UsageBaseline = {
         input_tokens: 50000,
         output_tokens: 10000,
+        cache_read_input_tokens: 12000,
         request_count: 500,
       };
 
@@ -253,10 +267,11 @@ describe("UsageStatsStore", () => {
       expect(store.currentBaseline).toEqual(baseline);
 
       const pool = createMockPool([
-        { status: "active", input_tokens: 100, output_tokens: 10, request_count: 1 },
+        { status: "active", input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 20, request_count: 1 },
       ]);
       const summary = store.getSummary(pool);
       expect(summary.total_input_tokens).toBe(50100);
+      expect(summary.total_cache_read_input_tokens).toBe(12020);
     });
   });
 
@@ -407,7 +422,13 @@ describe("UsageStatsStore", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date().toISOString(),
-          totals: { input_tokens: 10_000_000, output_tokens: 2_000_000, request_count: 5000, active_accounts: 15 },
+          totals: {
+            input_tokens: 10_000_000,
+            output_tokens: 2_000_000,
+            cache_read_input_tokens: 0,
+            request_count: 5000,
+            active_accounts: 15,
+          },
         },
       ];
       // No baseline — simulates pre-PR#221 data
@@ -432,6 +453,7 @@ describe("UsageStatsStore", () => {
       expect(persistence.savedBaseline).toEqual({
         input_tokens: 9_900_000,
         output_tokens: 1_998_000,
+        cache_read_input_tokens: 0,
         request_count: 4950,
       });
     });
@@ -440,10 +462,21 @@ describe("UsageStatsStore", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date().toISOString(),
-          totals: { input_tokens: 10_000_000, output_tokens: 2_000_000, request_count: 5000, active_accounts: 15 },
+          totals: {
+            input_tokens: 10_000_000,
+            output_tokens: 2_000_000,
+            cache_read_input_tokens: 0,
+            request_count: 5000,
+            active_accounts: 15,
+          },
         },
       ];
-      const baseline: UsageBaseline = { input_tokens: 5_000_000, output_tokens: 1_000_000, request_count: 2500 };
+      const baseline: UsageBaseline = {
+        input_tokens: 5_000_000,
+        output_tokens: 1_000_000,
+        cache_read_input_tokens: 0,
+        request_count: 2500,
+      };
       persistence = createMockPersistence(snapshots, baseline);
       store = new UsageStatsStore(persistence);
 

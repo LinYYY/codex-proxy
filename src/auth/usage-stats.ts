@@ -27,6 +27,7 @@ export interface UsageSnapshot {
   totals: {
     input_tokens: number;
     output_tokens: number;
+    cache_read_input_tokens: number;
     request_count: number;
     active_accounts: number;
   };
@@ -35,6 +36,7 @@ export interface UsageSnapshot {
 export interface UsageBaseline {
   input_tokens: number;
   output_tokens: number;
+  cache_read_input_tokens: number;
   request_count: number;
 }
 
@@ -48,12 +50,14 @@ export interface UsageDataPoint {
   timestamp: string;
   input_tokens: number;
   output_tokens: number;
+  cache_read_input_tokens: number;
   request_count: number;
 }
 
 export interface UsageSummary {
   total_input_tokens: number;
   total_output_tokens: number;
+  total_cache_read_input_tokens: number;
   total_request_count: number;
   total_accounts: number;
   active_accounts: number;
@@ -116,8 +120,19 @@ export class UsageStatsStore {
   constructor(persistence?: UsageStatsPersistence) {
     this.persistence = persistence ?? createFsUsageStatsPersistence();
     const loaded = this.persistence.load();
-    this.snapshots = loaded.snapshots;
-    this.baseline = loaded.baseline ?? { input_tokens: 0, output_tokens: 0, request_count: 0 };
+    this.snapshots = loaded.snapshots.map((snapshot) => ({
+      ...snapshot,
+      totals: {
+        ...snapshot.totals,
+        cache_read_input_tokens: snapshot.totals.cache_read_input_tokens ?? 0,
+      },
+    }));
+    this.baseline = {
+      input_tokens: loaded.baseline?.input_tokens ?? 0,
+      output_tokens: loaded.baseline?.output_tokens ?? 0,
+      cache_read_input_tokens: loaded.baseline?.cache_read_input_tokens ?? 0,
+      request_count: loaded.baseline?.request_count ?? 0,
+    };
 
     // Recover baseline from last snapshot if it was never persisted.
     // This handles the case where usage-history.json has correct snapshot
@@ -127,6 +142,7 @@ export class UsageStatsStore {
       this._pendingRecovery = {
         input_tokens: last.input_tokens,
         output_tokens: last.output_tokens,
+        cache_read_input_tokens: last.cache_read_input_tokens ?? 0,
         request_count: last.request_count,
       };
     }
@@ -143,6 +159,10 @@ export class UsageStatsStore {
     this.baseline = {
       input_tokens: Math.max(0, this._pendingRecovery.input_tokens - live.input_tokens),
       output_tokens: Math.max(0, this._pendingRecovery.output_tokens - live.output_tokens),
+      cache_read_input_tokens: Math.max(
+        0,
+        this._pendingRecovery.cache_read_input_tokens - live.cache_read_input_tokens,
+      ),
       request_count: Math.max(0, this._pendingRecovery.request_count - live.request_count),
     };
     this._pendingRecovery = undefined;
@@ -151,21 +171,37 @@ export class UsageStatsStore {
   }
 
   /** Sum current live usage from all accounts in the pool. */
-  private poolTotals(pool: AccountPool): { input_tokens: number; output_tokens: number; request_count: number; active_accounts: number; total_accounts: number } {
+  private poolTotals(pool: AccountPool): {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    request_count: number;
+    active_accounts: number;
+    total_accounts: number;
+  } {
     const entries = pool.getAllEntries();
     let input_tokens = 0;
     let output_tokens = 0;
+    let cache_read_input_tokens = 0;
     let request_count = 0;
     let active_accounts = 0;
 
     for (const entry of entries) {
       input_tokens += entry.usage.input_tokens;
       output_tokens += entry.usage.output_tokens;
+      cache_read_input_tokens += entry.usage.cache_read_input_tokens ?? 0;
       request_count += entry.usage.request_count;
       if (entry.status === "active") active_accounts++;
     }
 
-    return { input_tokens, output_tokens, request_count, active_accounts, total_accounts: entries.length };
+    return {
+      input_tokens,
+      output_tokens,
+      cache_read_input_tokens,
+      request_count,
+      active_accounts,
+      total_accounts: entries.length,
+    };
   }
 
   /** Take a snapshot of current cumulative usage across all accounts. */
@@ -180,14 +216,20 @@ export class UsageStatsStore {
       const prevLive = {
         input_tokens: lastSnapshot.totals.input_tokens - this.baseline.input_tokens,
         output_tokens: lastSnapshot.totals.output_tokens - this.baseline.output_tokens,
+        cache_read_input_tokens:
+          (lastSnapshot.totals.cache_read_input_tokens ?? 0) - this.baseline.cache_read_input_tokens,
         request_count: lastSnapshot.totals.request_count - this.baseline.request_count,
       };
       if (live.input_tokens < prevLive.input_tokens ||
           live.output_tokens < prevLive.output_tokens ||
+          live.cache_read_input_tokens < prevLive.cache_read_input_tokens ||
           live.request_count < prevLive.request_count) {
         this.baseline = {
           input_tokens: this.baseline.input_tokens + Math.max(0, prevLive.input_tokens - live.input_tokens),
           output_tokens: this.baseline.output_tokens + Math.max(0, prevLive.output_tokens - live.output_tokens),
+          cache_read_input_tokens:
+            this.baseline.cache_read_input_tokens +
+            Math.max(0, prevLive.cache_read_input_tokens - live.cache_read_input_tokens),
           request_count: this.baseline.request_count + Math.max(0, prevLive.request_count - live.request_count),
         };
       }
@@ -199,6 +241,7 @@ export class UsageStatsStore {
       totals: {
         input_tokens: this.baseline.input_tokens + live.input_tokens,
         output_tokens: this.baseline.output_tokens + live.output_tokens,
+        cache_read_input_tokens: this.baseline.cache_read_input_tokens + live.cache_read_input_tokens,
         request_count: this.baseline.request_count + live.request_count,
         active_accounts: live.active_accounts,
       },
@@ -220,6 +263,7 @@ export class UsageStatsStore {
     return {
       total_input_tokens: this.baseline.input_tokens + live.input_tokens,
       total_output_tokens: this.baseline.output_tokens + live.output_tokens,
+      total_cache_read_input_tokens: this.baseline.cache_read_input_tokens + live.cache_read_input_tokens,
       total_request_count: this.baseline.request_count + live.request_count,
       total_accounts: live.total_accounts,
       active_accounts: live.active_accounts,
@@ -251,6 +295,10 @@ export class UsageStatsStore {
         timestamp: filtered[i].timestamp,
         input_tokens: Math.max(0, curr.input_tokens - prev.input_tokens),
         output_tokens: Math.max(0, curr.output_tokens - prev.output_tokens),
+        cache_read_input_tokens: Math.max(
+          0,
+          (curr.cache_read_input_tokens ?? 0) - (prev.cache_read_input_tokens ?? 0),
+        ),
         request_count: Math.max(0, curr.request_count - prev.request_count),
       });
     }
@@ -286,12 +334,14 @@ function bucketize(deltas: UsageDataPoint[], bucketMs: number): UsageDataPoint[]
     if (existing) {
       existing.input_tokens += d.input_tokens;
       existing.output_tokens += d.output_tokens;
+      existing.cache_read_input_tokens += d.cache_read_input_tokens;
       existing.request_count += d.request_count;
     } else {
       buckets.set(bucketKey, {
         timestamp: new Date(bucketKey).toISOString(),
         input_tokens: d.input_tokens,
         output_tokens: d.output_tokens,
+        cache_read_input_tokens: d.cache_read_input_tokens,
         request_count: d.request_count,
       });
     }

@@ -39,12 +39,14 @@ function makeEntry(id: string): AccountEntry {
       request_count: 0,
       input_tokens: 0,
       output_tokens: 0,
+      cache_read_input_tokens: 0,
       empty_response_count: 0,
       last_used: null,
       rate_limit_until: null,
       window_request_count: 0,
       window_input_tokens: 0,
       window_output_tokens: 0,
+      window_cache_read_input_tokens: 0,
       window_counters_reset_at: null,
       limit_window_seconds: null,
     },
@@ -96,6 +98,8 @@ describe("account-persistence", () => {
     it("backfills missing empty_response_count and auto-persists", () => {
       const entry = makeEntry("a");
       (entry.usage as unknown as Record<string, unknown>).empty_response_count = undefined;
+      (entry.usage as unknown as Record<string, unknown>).cache_read_input_tokens = undefined;
+      (entry.usage as unknown as Record<string, unknown>).window_cache_read_input_tokens = undefined;
       const data: AccountsFile = { accounts: [entry] };
       mockFs.existsSync.mockImplementation(((path: string) =>
         path.includes("accounts.json")) as () => boolean,
@@ -105,6 +109,8 @@ describe("account-persistence", () => {
       const p = createFsPersistence();
       const result = p.load();
       expect(result.entries[0].usage.empty_response_count).toBe(0);
+      expect(result.entries[0].usage.cache_read_input_tokens).toBe(0);
+      expect(result.entries[0].usage.window_cache_read_input_tokens).toBe(0);
       expect(result.needsPersist).toBe(true);
       // Verify auto-persist was triggered (write + rename for atomic save)
       expect(mockFs.writeFileSync).toHaveBeenCalledTimes(1);

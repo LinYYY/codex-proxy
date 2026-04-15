@@ -13,13 +13,21 @@ import { UsageStatsStore, type UsageStatsPersistence, type UsageSnapshot } from 
 import { createUsageStatsRoutes } from "@src/routes/admin/usage-stats.js";
 import type { AccountPool } from "@src/auth/account-pool.js";
 
-function createMockPool(totals: { input_tokens: number; output_tokens: number; request_count: number }): AccountPool {
+function createMockPool(totals: {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  request_count: number;
+}): AccountPool {
   return {
     getAllEntries: () => [
       {
         id: "e1",
         status: "active",
-        usage: totals,
+        usage: {
+          ...totals,
+          cache_read_input_tokens: totals.cache_read_input_tokens ?? 0,
+        },
       },
     ],
   } as unknown as AccountPool;
@@ -36,7 +44,7 @@ function createStore(snapshots: UsageSnapshot[] = []): UsageStatsStore {
 describe("usage stats routes", () => {
   describe("GET /admin/usage-stats/summary", () => {
     it("returns cumulative totals", async () => {
-      const pool = createMockPool({ input_tokens: 5000, output_tokens: 1000, request_count: 20 });
+      const pool = createMockPool({ input_tokens: 5000, output_tokens: 1000, cache_read_input_tokens: 1200, request_count: 20 });
       const store = createStore();
       const app = new Hono();
       app.route("/", createUsageStatsRoutes(pool, store));
@@ -47,6 +55,7 @@ describe("usage stats routes", () => {
       const body = await res.json();
       expect(body.total_input_tokens).toBe(5000);
       expect(body.total_output_tokens).toBe(1000);
+      expect(body.total_cache_read_input_tokens).toBe(1200);
       expect(body.total_request_count).toBe(20);
       expect(body.total_accounts).toBe(1);
       expect(body.active_accounts).toBe(1);
@@ -73,15 +82,15 @@ describe("usage stats routes", () => {
       const snapshots: UsageSnapshot[] = [
         {
           timestamp: new Date(now - 3600_000).toISOString(),
-          totals: { input_tokens: 100, output_tokens: 10, request_count: 1, active_accounts: 1 },
+          totals: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 20, request_count: 1, active_accounts: 1 },
         },
         {
           timestamp: new Date(now).toISOString(),
-          totals: { input_tokens: 500, output_tokens: 50, request_count: 5, active_accounts: 1 },
+          totals: { input_tokens: 500, output_tokens: 50, cache_read_input_tokens: 90, request_count: 5, active_accounts: 1 },
         },
       ];
 
-      const pool = createMockPool({ input_tokens: 500, output_tokens: 50, request_count: 5 });
+      const pool = createMockPool({ input_tokens: 500, output_tokens: 50, cache_read_input_tokens: 90, request_count: 5 });
       const store = createStore(snapshots);
       const app = new Hono();
       app.route("/", createUsageStatsRoutes(pool, store));
@@ -93,6 +102,7 @@ describe("usage stats routes", () => {
       expect(body.granularity).toBe("raw");
       expect(body.data_points).toHaveLength(1);
       expect(body.data_points[0].input_tokens).toBe(400);
+      expect(body.data_points[0].cache_read_input_tokens).toBe(70);
     });
 
     it("rejects invalid granularity", async () => {
