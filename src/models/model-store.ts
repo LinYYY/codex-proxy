@@ -33,7 +33,7 @@ export interface CodexModelInfo {
   supportsPersonality: boolean;
   upgrade: string | null;
   /** Where this model entry came from */
-  source?: "static" | "backend";
+  source?: "static" | "backend" | "cache";
 }
 
 interface ModelsConfig {
@@ -156,7 +156,7 @@ export class ModelStore {
           let added = 0;
           for (const m of cachedModels) {
             if (!staticIds.has(m.id)) {
-              this.catalog.push({ ...m, source: "backend" as const });
+              this.catalog.push({ ...m, source: "cache" as const });
               added++;
             }
           }
@@ -204,7 +204,7 @@ export class ModelStore {
     }
 
     for (const m of this.catalog) {
-      if (!seenIds.has(m.id)) {
+      if (!seenIds.has(m.id) && m.source !== "cache") {
         merged.push({ ...m, source: "static" });
       }
     }

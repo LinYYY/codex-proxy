@@ -130,6 +130,34 @@ import { Hono } from "hono";
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+type ExecResult = { stdout: string; stderr: string };
+
+function ok(stdout = ""): ExecResult {
+  return { stdout, stderr: "" };
+}
+
+function mockGitExec(overrides: Record<string, ExecResult | Error>) {
+  _execFileAsync.mockImplementation(async (_cmd: string, args?: string[]) => {
+    const key = (args ?? []).join(" ");
+    const matched = overrides[key];
+    if (matched instanceof Error) throw matched;
+    if (matched) return matched;
+
+    switch (key) {
+      case "remote":
+        return ok("origin\nupstream\n");
+      case "rev-parse --abbrev-ref HEAD":
+        return ok("master\n");
+      case "symbolic-ref --short refs/remotes/upstream/HEAD":
+        return ok("upstream/master\n");
+      case "rev-parse --verify --quiet upstream/master":
+        return ok("refs/remotes/upstream/master\n");
+      default:
+        return ok("");
+    }
+  });
+}
+
 function createMockAccountPool() {
   return {
     isAuthenticated: vi.fn(() => true),
@@ -245,11 +273,12 @@ describe("E2E: self-update routes", () => {
 
   describe("POST /admin/check-update", () => {
     it("returns up-to-date when 0 commits behind", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "abc1234\n", stderr: "" })  // rev-parse HEAD
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })            // git fetch
-        .mockResolvedValueOnce({ stdout: "0\n", stderr: "" })        // rev-list --count
-        .mockResolvedValueOnce({ stdout: "abc1234\n", stderr: "" }); // rev-parse origin/master
+      mockGitExec({
+        "rev-parse --short HEAD": ok("abc1234\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("0\n"),
+        "rev-parse --short upstream/master": ok("abc1234\n"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/check-update", { method: "POST" });
@@ -262,16 +291,15 @@ describe("E2E: self-update routes", () => {
       expect(proxy.mode).toBe("git");
     });
 
-    it("returns commits when behind origin", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "2\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "bbb\n", stderr: "" })
-        .mockResolvedValueOnce({
-          stdout: "ccc fix: bug\nddd feat: new\n",
-          stderr: "",
-        });
+    it("returns commits when behind upstream", async () => {
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("2\n"),
+        "rev-parse --short upstream/master": ok("bbb\n"),
+        "log HEAD..upstream/master --oneline --format=%h %s": ok("ccc fix: bug\nddd feat: new\n"),
+        "show upstream/master:CHANGELOG.md": ok("## [Unreleased]\n\n- item\n"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/check-update", { method: "POST" });
@@ -286,10 +314,33 @@ describe("E2E: self-update routes", () => {
       expect(commits[1]).toEqual({ hash: "ddd", message: "feat: new" });
     });
 
+    it("prefers upstream over origin when both exist", async () => {
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("0\n"),
+        "rev-list HEAD..origin/master --count": ok("7\n"),
+        "rev-parse --short upstream/master": ok("aaa\n"),
+      });
+
+      const app = await buildApp();
+      const res = await app.request("/admin/check-update", { method: "POST" });
+      const body = await res.json() as Record<string, unknown>;
+      const proxy = body.proxy as Record<string, unknown>;
+
+      expect(proxy.update_available).toBe(false);
+      expect(_execFileAsync).toHaveBeenCalledWith(
+        "git",
+        ["rev-list", "HEAD..upstream/master", "--count"],
+        expect.any(Object),
+      );
+    });
+
     it("handles git fetch failure gracefully", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" })
-        .mockRejectedValueOnce(new Error("network timeout"));
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": new Error("network timeout"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/check-update", { method: "POST" });
@@ -331,12 +382,12 @@ describe("E2E: self-update routes", () => {
     });
 
     it("includes codex update check result", async () => {
-      // Git check: up to date
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "0\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" });
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("0\n"),
+        "rev-parse --short upstream/master": ok("aaa\n"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/check-update", { method: "POST" });
@@ -357,7 +408,13 @@ describe("E2E: self-update routes", () => {
 
   describe("POST /admin/apply-update", () => {
     it("streams SSE progress: pull → install → build → restart", async () => {
-      _execFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": ok(""),
+        "install": ok(""),
+        "run build": ok(""),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/apply-update", { method: "POST" });
@@ -387,9 +444,11 @@ describe("E2E: self-update routes", () => {
     });
 
     it("reports error when git pull fails", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })    // git checkout -- .
-        .mockRejectedValueOnce(new Error("git pull failed")); // git pull
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": new Error("git pull failed"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/apply-update", { method: "POST" });
@@ -403,10 +462,12 @@ describe("E2E: self-update routes", () => {
     });
 
     it("reports error when npm install fails", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })        // git checkout
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })        // git pull
-        .mockRejectedValueOnce(new Error("npm ERR! ERESOLVE"));   // npm install
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": ok(""),
+        "install": new Error("npm ERR! ERESOLVE"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/apply-update", { method: "POST" });
@@ -425,11 +486,13 @@ describe("E2E: self-update routes", () => {
     });
 
     it("reports error when build fails", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })             // git checkout
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })             // git pull
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })             // npm install
-        .mockRejectedValueOnce(new Error("tsc: error TS2345"));        // npm run build
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": ok(""),
+        "install": ok(""),
+        "run build": new Error("tsc: error TS2345"),
+      });
 
       const app = await buildApp();
       const res = await app.request("/admin/apply-update", { method: "POST" });
@@ -450,7 +513,13 @@ describe("E2E: self-update routes", () => {
       _spawn.mockClear();
       exitSpy.mockClear();
 
-      _execFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": ok(""),
+        "install": ok(""),
+        "run build": ok(""),
+      });
 
       const app = await buildApp();
       await app.request("/admin/apply-update", { method: "POST" });
@@ -468,7 +537,13 @@ describe("E2E: self-update routes", () => {
       _spawn.mockClear();
       exitSpy.mockClear();
 
-      _execFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": ok(""),
+        "install": ok(""),
+        "run build": ok(""),
+      });
 
       // existsSync returns true for .git check, false for nodeExe check in hardRestart
       _existsSync.mockImplementation((path: string) => {

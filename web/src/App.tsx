@@ -32,21 +32,39 @@ function useUpdateMessage() {
 
   let msg: string | null = null;
   let color = "text-primary";
+  const formatProxyUpdateMsg = (count: number | null | undefined) => {
+    if (count && count > 0) {
+      return t("officialUpstreamCommitsPending").replace("{count}", String(count));
+    }
+    return t("officialUpstreamUpdateAvailable");
+  };
 
   if (!update.checking && update.result) {
     const parts: string[] = [];
     const r = update.result;
     if (r.proxy?.error) { parts.push(`Proxy: ${r.proxy.error}`); color = "text-red-500"; }
-    else if (r.proxy?.update_available) { parts.push(t("updateAvailable")); color = "text-amber-500"; }
+    else if (r.proxy?.update_available) {
+      parts.push(formatProxyUpdateMsg(r.proxy.commits_behind));
+      color = "text-amber-500";
+    }
     if (r.codex?.error) { parts.push(`Codex: ${r.codex.error}`); color = "text-red-500"; }
     else if (r.codex_update_in_progress) { parts.push(t("fingerprintUpdating")); }
     else if (r.codex?.version_changed) { parts.push(`Codex: v${r.codex.current_version}`); color = "text-blue-500"; }
     msg = parts.length > 0 ? parts.join(" · ") : t("upToDate");
+  } else if (!update.checking && update.status?.proxy.update_available) {
+    msg = formatProxyUpdateMsg(update.status.proxy.commits_behind);
+    color = "text-amber-500";
   } else if (!update.checking && update.error) { msg = update.error; color = "text-red-500"; }
 
   const hasUpdate = update.status?.proxy.update_available ?? false;
   const proxyUpdateInfo = hasUpdate
-    ? { mode: update.status!.proxy.mode, commits: update.status!.proxy.commits, changelog: update.status!.proxy.changelog ?? null, release: update.status!.proxy.release }
+    ? {
+        mode: update.status!.proxy.mode,
+        commits: update.status!.proxy.commits,
+        commitsBehind: update.status!.proxy.commits_behind,
+        changelog: update.status!.proxy.changelog ?? null,
+        release: update.status!.proxy.release,
+      }
     : null;
 
   return { ...update, msg, color, hasUpdate, proxyUpdateInfo };
@@ -214,6 +232,7 @@ function Dashboard() {
           onClose={() => setShowModal(false)}
           mode={update.proxyUpdateInfo.mode}
           commits={update.proxyUpdateInfo.commits}
+          commitsBehind={update.proxyUpdateInfo.commitsBehind}
           changelog={update.proxyUpdateInfo.changelog}
           release={update.proxyUpdateInfo.release}
           onApply={update.applyUpdate}

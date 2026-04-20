@@ -2,7 +2,7 @@
  * Tests for self-update — deploy mode detection, version info, update checking, and applying.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ── Mock variables (closure-based, safe across resetModules) ──────────
 
@@ -33,9 +33,41 @@ async function importFresh() {
   return await import("@src/self-update.js");
 }
 
+type ExecResult = { stdout: string; stderr: string };
+
+function ok(stdout = ""): ExecResult {
+  return { stdout, stderr: "" };
+}
+
+function mockGitExec(overrides: Record<string, ExecResult | Error>) {
+  _execFileAsync.mockImplementation(async (_cmd: string, args?: string[]) => {
+    const key = (args ?? []).join(" ");
+    const matched = overrides[key];
+    if (matched instanceof Error) throw matched;
+    if (matched) return matched;
+
+    switch (key) {
+      case "remote":
+        return ok("origin\nupstream\n");
+      case "rev-parse --abbrev-ref HEAD":
+        return ok("master\n");
+      case "symbolic-ref --short refs/remotes/upstream/HEAD":
+        return ok("upstream/master\n");
+      case "rev-parse --verify --quiet upstream/master":
+        return ok("refs/remotes/upstream/master\n");
+      case "rev-parse --verify --quiet origin/master":
+        return ok("refs/remotes/origin/master\n");
+      default:
+        return ok("");
+    }
+  });
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 describe("self-update", () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
@@ -46,6 +78,11 @@ describe("self-update", () => {
     _readFileSync.mockReturnValue(JSON.stringify({ version: "1.0.0" }));
     _execFileSync.mockReturnValue("");
     _execFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
+    exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
   });
 
   // ── getDeployMode ─────────────────────────────────────────────────
@@ -134,11 +171,12 @@ describe("self-update", () => {
 
   describe("checkProxySelfUpdate (git mode)", () => {
     it("returns updateAvailable=false when up to date", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "abc1234\n", stderr: "" }) // rev-parse HEAD
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })          // git fetch
-        .mockResolvedValueOnce({ stdout: "0\n", stderr: "" })       // rev-list --count
-        .mockResolvedValueOnce({ stdout: "abc1234\n", stderr: "" }); // rev-parse origin/master
+      mockGitExec({
+        "rev-parse --short HEAD": ok("abc1234\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("0\n"),
+        "rev-parse --short upstream/master": ok("abc1234\n"),
+      });
 
       const { checkProxySelfUpdate } = await importFresh();
       const result = await checkProxySelfUpdate();
@@ -149,15 +187,16 @@ describe("self-update", () => {
     });
 
     it("returns commits when behind", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa1111\n", stderr: "" }) // rev-parse HEAD
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })          // git fetch
-        .mockResolvedValueOnce({ stdout: "3\n", stderr: "" })       // rev-list --count
-        .mockResolvedValueOnce({ stdout: "bbb2222\n", stderr: "" }) // rev-parse origin/master
-        .mockResolvedValueOnce({                                     // git log
-          stdout: "ccc3333 fix: bug\nddd4444 feat: new\neee5555 chore: cleanup\n",
-          stderr: "",
-        });
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa1111\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("3\n"),
+        "rev-parse --short upstream/master": ok("bbb2222\n"),
+        "log HEAD..upstream/master --oneline --format=%h %s": ok(
+          "ccc3333 fix: bug\nddd4444 feat: new\neee5555 chore: cleanup\n",
+        ),
+        "show upstream/master:CHANGELOG.md": ok("## [Unreleased]\n\n- item\n"),
+      });
 
       const { checkProxySelfUpdate } = await importFresh();
       const result = await checkProxySelfUpdate();
@@ -169,15 +208,16 @@ describe("self-update", () => {
     });
 
     it("populates commit log correctly", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "2\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "bbb\n", stderr: "" })
-        .mockResolvedValueOnce({
-          stdout: "abc1234 fix: something broke\ndef5678 feat: add widget\n",
-          stderr: "",
-        });
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("2\n"),
+        "rev-parse --short upstream/master": ok("bbb\n"),
+        "log HEAD..upstream/master --oneline --format=%h %s": ok(
+          "abc1234 fix: something broke\ndef5678 feat: add widget\n",
+        ),
+        "show upstream/master:CHANGELOG.md": ok("## [Unreleased]\n\n- item\n"),
+      });
 
       const { checkProxySelfUpdate } = await importFresh();
       const result = await checkProxySelfUpdate();
@@ -185,10 +225,30 @@ describe("self-update", () => {
       expect(result.commits[1]).toEqual({ hash: "def5678", message: "feat: add widget" });
     });
 
+    it("prefers upstream over origin when both remotes exist", async () => {
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("0\n"),
+        "rev-list HEAD..origin/master --count": ok("5\n"),
+        "rev-parse --short upstream/master": ok("aaa\n"),
+      });
+
+      const { checkProxySelfUpdate } = await importFresh();
+      const result = await checkProxySelfUpdate();
+      expect(result.updateAvailable).toBe(false);
+      expect(_execFileAsync).toHaveBeenCalledWith(
+        "git",
+        ["rev-list", "HEAD..upstream/master", "--count"],
+        expect.any(Object),
+      );
+    });
+
     it("handles git fetch failure gracefully", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" })    // rev-parse HEAD
-        .mockRejectedValueOnce(new Error("network error"));        // git fetch fails
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": new Error("network error"),
+      });
 
       const { checkProxySelfUpdate } = await importFresh();
       const result = await checkProxySelfUpdate();
@@ -337,11 +397,12 @@ describe("self-update", () => {
     });
 
     it("returns result after check", async () => {
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "0\n", stderr: "" })
-        .mockResolvedValueOnce({ stdout: "aaa\n", stderr: "" });
+      mockGitExec({
+        "rev-parse --short HEAD": ok("aaa\n"),
+        "fetch upstream --quiet": ok(""),
+        "rev-list HEAD..upstream/master --count": ok("0\n"),
+        "rev-parse --short upstream/master": ok("aaa\n"),
+      });
 
       const { checkProxySelfUpdate, getCachedProxyUpdateResult } = await importFresh();
       await checkProxySelfUpdate();
@@ -355,23 +416,28 @@ describe("self-update", () => {
 
   describe("applyProxySelfUpdate", () => {
     it("runs git checkout + git pull + npm install + npm run build", async () => {
-      _execFileAsync.mockResolvedValue({ stdout: "", stderr: "" });
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": ok(""),
+        "install": ok(""),
+        "run build": ok(""),
+      });
 
       const { applyProxySelfUpdate } = await importFresh();
       const result = await applyProxySelfUpdate();
       expect(result.started).toBe(true);
       expect(result.error).toBeUndefined();
 
-      // 4 sequential calls: git checkout -- ., git pull, npm install, npm run build
-      expect(_execFileAsync).toHaveBeenCalledTimes(4);
+      expect(_execFileAsync).toHaveBeenCalledWith("git", ["pull", "upstream", "master"], expect.any(Object));
     });
 
     it("returns error when step fails", async () => {
-      // First call is "git checkout -- ." which has .catch(() => {}), so it swallows errors.
-      // Reject the second call (git pull) to trigger the error path.
-      _execFileAsync
-        .mockResolvedValueOnce({ stdout: "", stderr: "" })   // git checkout -- .
-        .mockRejectedValueOnce(new Error("git pull failed")); // git pull
+      mockGitExec({
+        "fetch upstream --quiet": ok(""),
+        "checkout -- .": ok(""),
+        "pull upstream master": new Error("git pull failed"),
+      });
 
       const { applyProxySelfUpdate } = await importFresh();
       const result = await applyProxySelfUpdate();
@@ -380,27 +446,33 @@ describe("self-update", () => {
     });
 
     it("returns error when already in progress", async () => {
-      // Make first call hang
-      let resolveFirst: (() => void) | undefined;
-      _execFileAsync.mockImplementationOnce(
-        () => new Promise<{ stdout: string; stderr: string }>((resolve) => {
-          resolveFirst = () => resolve({ stdout: "", stderr: "" });
-        }),
-      );
+      // Keep the first update hanging at git fetch so the second call only exercises the in-progress guard.
+      _execFileAsync.mockImplementation(async (_cmd: string, args?: string[]) => {
+        const key = (args ?? []).join(" ");
+        if (key === "remote") return ok("origin\nupstream\n");
+        if (key === "fetch upstream --quiet") return await new Promise<ExecResult>(() => {});
+        switch (key) {
+          case "rev-parse --abbrev-ref HEAD":
+            return ok("master\n");
+          case "symbolic-ref --short refs/remotes/upstream/HEAD":
+            return ok("upstream/master\n");
+          case "rev-parse --verify --quiet upstream/master":
+            return ok("refs/remotes/upstream/master\n");
+          default:
+            return ok("");
+        }
+      });
 
       const { applyProxySelfUpdate } = await importFresh();
 
-      // Start first update (will hang on git pull)
+      // Start first update (will hang on git fetch)
       const first = applyProxySelfUpdate();
 
       // Second call while first is in progress
       const second = await applyProxySelfUpdate();
       expect(second.started).toBe(false);
       expect(second.error).toContain("already in progress");
-
-      // Cleanup: resolve the hanging promise
-      resolveFirst?.();
-      await first;
+      void first;
     });
   });
 });
