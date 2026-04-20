@@ -15,6 +15,7 @@ interface UpdateModalProps {
   onClose: () => void;
   mode: "git" | "docker" | "electron";
   commits: { hash: string; message: string }[];
+  commitsBehind?: number | null;
   changelog: string | null;
   release: { version: string; body: string; url: string } | null;
   onApply: () => void;
@@ -29,6 +30,7 @@ export function UpdateModal({
   onClose,
   mode,
   commits,
+  commitsBehind = null,
   changelog,
   release,
   onApply,
@@ -39,6 +41,7 @@ export function UpdateModal({
 }: UpdateModalProps) {
   const { t } = useI18n();
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const officialUpstreamCommitCount = commitsBehind ?? commits.length;
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -77,7 +80,9 @@ export function UpdateModal({
         {/* Header */}
         <div class="px-5 py-4 border-b border-gray-200 dark:border-border-dark flex items-center justify-between">
           <h2 class="text-base font-bold text-slate-800 dark:text-text-main">
-            {t("updateTitle")}
+            {mode === "git"
+              ? t("officialUpstreamUpdateTitle")
+              : t("updateTitle")}
           </h2>
           {!restarting && !applying && (
             <button
@@ -137,20 +142,30 @@ export function UpdateModal({
               </span>
             </div>
           ) : mode === "git" ? (
-            changelog ? (
-              <pre class="text-xs text-slate-600 dark:text-text-dim whitespace-pre-wrap max-h-64 overflow-y-auto leading-relaxed">
-                {changelog}
-              </pre>
-            ) : (
-              <ul class="space-y-1 text-sm text-slate-600 dark:text-text-dim max-h-64 overflow-y-auto">
-                {commits.map((c) => (
-                  <li key={c.hash} class="flex gap-2 py-0.5">
-                    <code class="text-primary/70 text-xs shrink-0 pt-0.5">{c.hash}</code>
-                    <span class="text-xs">{c.message}</span>
-                  </li>
-                ))}
-              </ul>
-            )
+            <div class="space-y-3">
+              <div class="rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-amber-800 dark:border-amber-700/40 dark:bg-amber-900/10 dark:text-amber-300">
+                <div class="text-[11px] font-semibold uppercase tracking-wide">
+                  {t("officialUpstreamLabel")}
+                </div>
+                <div class="mt-1 text-sm font-medium">
+                  {t("officialUpstreamCommitsToMerge").replace("{count}", String(officialUpstreamCommitCount))}
+                </div>
+              </div>
+              {changelog ? (
+                <pre class="text-xs text-slate-600 dark:text-text-dim whitespace-pre-wrap max-h-64 overflow-y-auto leading-relaxed">
+                  {changelog}
+                </pre>
+              ) : (
+                <ul class="space-y-1 text-sm text-slate-600 dark:text-text-dim max-h-64 overflow-y-auto">
+                  {commits.map((c) => (
+                    <li key={c.hash} class="flex gap-2 py-0.5">
+                      <code class="text-primary/70 text-xs shrink-0 pt-0.5">{c.hash}</code>
+                      <span class="text-xs">{c.message}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : (
             <>
               {release && (

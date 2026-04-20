@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { resolve } from "path";
 
 vi.mock("fs", () => ({
@@ -268,6 +268,38 @@ describe("ModelStore", () => {
       const info = getModelInfo("gpt-5.3-codex");
       expect(info).toBeDefined();
       expect(info!.source).toBe("static");
+    });
+
+    it("drops stale cache-only models after a successful backend refresh", () => {
+      const CACHE_YAML = `
+models:
+  - id: gpt-5.1-codex
+    displayName: GPT-5.1 Codex
+    description: Retired cached model
+    isDefault: false
+    supportedReasoningEfforts:
+      - { reasoningEffort: medium, description: "Medium" }
+    defaultReasoningEffort: medium
+    inputModalities: [text]
+    supportsPersonality: false
+upgrade: null
+aliases: {}
+`;
+      vi.mocked(existsSync).mockImplementation((path: string) => path.includes("models-cache.yaml"));
+      vi.mocked(readFileSync).mockImplementation((path: string) => {
+        if (path.includes("models-cache.yaml")) return CACHE_YAML;
+        return FIXTURE_YAML;
+      });
+
+      loadStaticModels("/tmp/test-config");
+      expect(getModelInfo("gpt-5.1-codex")).toBeDefined();
+
+      applyBackendModels([{
+        slug: "gpt-5.4",
+        display_name: "GPT-5.4 (Backend)",
+      }]);
+
+      expect(getModelInfo("gpt-5.1-codex")).toBeUndefined();
     });
 
     it("auto-admits new Codex-compatible models from backend", () => {

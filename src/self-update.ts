@@ -205,11 +205,101 @@ export function getCachedProxyUpdateResult(): ProxySelfUpdateResult | null {
   return _cachedResult;
 }
 
-/** Get commit log between HEAD and origin/master. */
-async function getCommitLog(cwd: string): Promise<CommitInfo[]> {
+async function listGitRemotes(cwd: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync("git", ["remote"], { cwd, timeout: 5000 });
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function getTrackingRemote(cwd: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
-      "git", ["log", "HEAD..origin/master", "--oneline", "--format=%h %s"],
+      "git",
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
+      { cwd, timeout: 5000 },
+    );
+    const ref = stdout.trim();
+    const slash = ref.indexOf("/");
+    return slash > 0 ? ref.slice(0, slash) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getCurrentBranch(cwd: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
+      cwd,
+      timeout: 5000,
+    });
+    const branch = stdout.trim();
+    return branch && branch !== "HEAD" ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+async function refExists(cwd: string, ref: string): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["rev-parse", "--verify", "--quiet", ref], { cwd, timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function getRemoteHeadBranch(cwd: string, remote: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git",
+      ["symbolic-ref", "--short", `refs/remotes/${remote}/HEAD`],
+      { cwd, timeout: 5000 },
+    );
+    const ref = stdout.trim();
+    const prefix = `${remote}/`;
+    return ref.startsWith(prefix) ? ref.slice(prefix.length) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveUpdateRemote(cwd: string): Promise<string> {
+  const remotes = await listGitRemotes(cwd);
+  if (remotes.includes("upstream")) return "upstream";
+
+  const trackingRemote = await getTrackingRemote(cwd);
+  if (trackingRemote && remotes.includes(trackingRemote)) return trackingRemote;
+  if (remotes.includes("origin")) return "origin";
+  return remotes[0] ?? "origin";
+}
+
+async function resolveUpdateBranch(cwd: string, remote: string): Promise<string> {
+  const currentBranch = await getCurrentBranch(cwd);
+  const remoteHeadBranch = await getRemoteHeadBranch(cwd, remote);
+  const candidates = [currentBranch, remoteHeadBranch, "master", "main"].filter(
+    (value): value is string => !!value,
+  );
+
+  for (const branch of candidates) {
+    if (await refExists(cwd, `${remote}/${branch}`)) {
+      return branch;
+    }
+  }
+
+  return currentBranch ?? remoteHeadBranch ?? "master";
+}
+
+/** Get commit log between HEAD and the selected remote ref. */
+async function getCommitLog(cwd: string, remoteRef: string): Promise<CommitInfo[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      "git", ["log", `HEAD..${remoteRef}`, "--oneline", "--format=%h %s"],
       { cwd, timeout: 10000 },
     );
     return stdout.trim().split("\n")
@@ -226,11 +316,11 @@ async function getCommitLog(cwd: string): Promise<CommitInfo[]> {
   }
 }
 
-/** Extract [Unreleased] section from CHANGELOG.md on origin/master. */
-async function getRemoteChangelog(cwd: string): Promise<string | null> {
+/** Extract [Unreleased] section from CHANGELOG.md on the selected remote ref. */
+async function getRemoteChangelog(cwd: string, remoteRef: string): Promise<string | null> {
   try {
     const { stdout } = await execFileAsync(
-      "git", ["show", "origin/master:CHANGELOG.md"],
+      "git", ["show", `${remoteRef}:CHANGELOG.md`],
       { cwd, timeout: 5000 },
     );
     const marker = "## [Unreleased]";
@@ -333,12 +423,13 @@ async function checkGitHubRelease(): Promise<GitHubReleaseInfo | null> {
   }
 }
 
-/** Fetch latest from origin and check how many commits behind. */
+/** Fetch latest from the selected update remote and check how many commits behind. */
 export async function checkProxySelfUpdate(): Promise<ProxySelfUpdateResult> {
   const mode = getDeployMode();
 
   if (mode === "git") {
     const cwd = process.cwd();
+    const remote = await resolveUpdateRemote(cwd);
 
     let currentCommit: string | null = null;
     try {
@@ -347,7 +438,7 @@ export async function checkProxySelfUpdate(): Promise<ProxySelfUpdateResult> {
     } catch { /* ignore */ }
 
     try {
-      await execFileAsync("git", ["fetch", "origin", "master", "--quiet"], { cwd, timeout: 30000 });
+      await execFileAsync("git", ["fetch", remote, "--quiet"], { cwd, timeout: 30000 });
     } catch (err) {
       console.warn("[SelfUpdate] git fetch failed:", err instanceof Error ? err.message : err);
       const result: ProxySelfUpdateResult = {
@@ -358,22 +449,24 @@ export async function checkProxySelfUpdate(): Promise<ProxySelfUpdateResult> {
       return result;
     }
 
+    const branch = await resolveUpdateBranch(cwd, remote);
+    const remoteRef = `${remote}/${branch}`;
     let commitsBehind = 0;
     let latestCommit: string | null = null;
     try {
       const { stdout: countOut } = await execFileAsync(
-        "git", ["rev-list", "HEAD..origin/master", "--count"], { cwd, timeout: 5000 },
+        "git", ["rev-list", `HEAD..${remoteRef}`, "--count"], { cwd, timeout: 5000 },
       );
       commitsBehind = parseInt(countOut.trim(), 10) || 0;
 
       const { stdout: latestOut } = await execFileAsync(
-        "git", ["rev-parse", "--short", "origin/master"], { cwd, timeout: 5000 },
+        "git", ["rev-parse", "--short", remoteRef], { cwd, timeout: 5000 },
       );
       latestCommit = latestOut.trim() || null;
     } catch { /* ignore */ }
 
-    const commits = commitsBehind > 0 ? await getCommitLog(cwd) : [];
-    const changelog = commitsBehind > 0 ? await getRemoteChangelog(cwd) : null;
+    const commits = commitsBehind > 0 ? await getCommitLog(cwd, remoteRef) : [];
+    const changelog = commitsBehind > 0 ? await getRemoteChangelog(cwd, remoteRef) : null;
 
     const result: ProxySelfUpdateResult = {
       commitsBehind, currentCommit, latestCommit,
@@ -453,10 +546,14 @@ export async function applyProxySelfUpdate(
   const report = onProgress ?? (() => {});
 
   try {
+    const remote = await resolveUpdateRemote(cwd);
+    await execFileAsync("git", ["fetch", remote, "--quiet"], { cwd, timeout: 30000 });
+    const branch = await resolveUpdateBranch(cwd, remote);
+
     report("pull", "running");
     console.log("[SelfUpdate] Pulling latest code...");
     await execFileAsync("git", ["checkout", "--", "."], { cwd, timeout: 10000 }).catch(() => {});
-    await execFileAsync("git", ["pull", "origin", "master"], { cwd, timeout: 60000 });
+    await execFileAsync("git", ["pull", remote, branch], { cwd, timeout: 60000 });
     report("pull", "done");
 
     report("install", "running");
