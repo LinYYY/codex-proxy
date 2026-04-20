@@ -16,6 +16,10 @@ export interface GeneralSettingsData {
   request_interval_ms: number | null;
   auto_update: boolean;
   auto_download: boolean;
+  logs_enabled: boolean;
+  logs_capacity: number;
+  logs_capture_body: boolean;
+  logs_llm_only: boolean;
 }
 
 interface GeneralSettingsSaveResponse extends GeneralSettingsData {
@@ -76,6 +80,10 @@ export function useGeneralSettings(apiKey: string | null) {
         request_interval_ms: result.request_interval_ms,
         auto_update: result.auto_update,
         auto_download: result.auto_download,
+        logs_enabled: result.logs_enabled,
+        logs_capacity: result.logs_capacity,
+        logs_capture_body: result.logs_capture_body,
+        logs_llm_only: result.logs_llm_only,
       });
       setRestartRequired(result.restart_required);
       setSaved(true);

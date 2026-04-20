@@ -17,12 +17,19 @@ import {
 } from "../translation/codex-to-anthropic.js";
 import { getConfig } from "../config.js";
 import { parseModelName, buildDisplayModelName } from "../models/model-store.js";
+import { enqueueLogEntry } from "../logs/entry.js";
+import { getRealClientIp } from "../utils/get-real-client-ip.js";
+import { randomUUID } from "crypto";
 import {
   handleProxyRequest,
   handleDirectRequest,
   type FormatAdapter,
+  type ResponseMetadata,
+  type UsageHint,
 } from "./shared/proxy-handler.js";
+import { extractAnthropicClientConversationId } from "./shared/anthropic-session-id.js";
 import type { UpstreamRouter } from "../proxy/upstream-router.js";
+import { summarizeRequestForLog } from "../logs/request-summary.js";
 
 function makeError(
   type: AnthropicErrorType,
@@ -42,10 +49,26 @@ function makeAnthropicFormat(wantThinking: boolean): FormatAdapter {
       ),
     format429: (msg) => makeError("rate_limit_error", msg),
     formatError: (_status, msg) => makeError("api_error", msg),
-    streamTranslator: (api, response, model, onUsage, onResponseId, _tupleSchema) =>
-      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking),
-    collectTranslator: (api, response, model, _tupleSchema) =>
-      collectCodexToAnthropicResponse(api, response, model, wantThinking),
+    streamTranslator: (
+      api,
+      response,
+      model,
+      onUsage,
+      onResponseId,
+      _tupleSchema,
+      usageHint?: UsageHint,
+      onResponseMetadata?: (metadata: ResponseMetadata) => void,
+    ) =>
+      streamCodexToAnthropic(api, response, model, onUsage, onResponseId, wantThinking, usageHint, onResponseMetadata),
+    collectTranslator: (
+      api,
+      response,
+      model,
+      _tupleSchema,
+      usageHint?: UsageHint,
+      onResponseMetadata?: (metadata: ResponseMetadata) => void,
+    ) =>
+      collectCodexToAnthropicResponse(api, response, model, wantThinking, usageHint, onResponseMetadata),
   };
 }
 
@@ -102,14 +125,40 @@ export function createMessagesRoutes(
       }
     }
 
-    const codexRequest = translateAnthropicToCodexRequest(req);
+    const clientConversationId = extractAnthropicClientConversationId(
+      req,
+      c.req.header("x-claude-code-session-id"),
+    );
+
+    const codexRequest = translateAnthropicToCodexRequest(req, undefined, {
+      injectHostedWebSearch: !allowUnauthenticated,
+      mapClaudeCodeWebSearch: !allowUnauthenticated && clientConversationId !== null,
+    });
+    if (!allowUnauthenticated) {
+      codexRequest.useWebSocket = true;
+    }
     const wantThinking = req.thinking?.type === "enabled" || req.thinking?.type === "adaptive";
     const proxyReq = {
       codexRequest,
       model: buildDisplayModelName(parseModelName(req.model)),
       isStreaming: req.stream,
+      clientConversationId: clientConversationId ?? undefined,
     };
     const fmt = makeAnthropicFormat(wantThinking);
+
+    const requestId = c.get("requestId") ?? randomUUID().slice(0, 8);
+    enqueueLogEntry({
+      requestId,
+      direction: "ingress",
+      method: c.req.method,
+      path: c.req.path,
+      model: req.model,
+      stream: !!req.stream,
+      request: summarizeRequestForLog("messages", req, {
+        ip: getRealClientIp(c, getConfig()?.server?.trust_proxy ?? false),
+        headers: Object.fromEntries(c.req.raw.headers.entries()),
+      }),
+    });
 
     if (routeMatch?.kind === "api-key" || routeMatch?.kind === "adapter") {
       const directReq = {
