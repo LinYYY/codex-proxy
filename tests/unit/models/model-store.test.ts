@@ -182,6 +182,19 @@ describe("ModelStore", () => {
       expect(result.serviceTier).toBe("fast");
     });
 
+    it("strips Claude Code [1m] context suffix before resolving", () => {
+      const result = parseModelName("gpt-5.4[1m]");
+      expect(result.modelId).toBe("gpt-5.4");
+      expect(result.serviceTier).toBeNull();
+      expect(result.reasoningEffort).toBeNull();
+    });
+
+    it("strips Claude Code [1m] suffix while preserving effort suffix", () => {
+      const result = parseModelName("gpt-5.4-high[1m]");
+      expect(result.modelId).toBe("gpt-5.4");
+      expect(result.reasoningEffort).toBe("high");
+    });
+
     it("falls back to config default for fully unknown name", () => {
       const result = parseModelName("totally-unknown");
       expect(result.modelId).toBe("gpt-5.3-codex");
