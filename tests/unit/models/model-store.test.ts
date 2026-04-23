@@ -37,6 +37,7 @@ import { readFileSync as realReadFileSync } from "fs";
 
 import {
   loadStaticModels,
+  isRecognizedModelName,
   parseModelName,
   resolveModelId,
   getModelInfo,
@@ -124,6 +125,10 @@ describe("ModelStore", () => {
   describe("resolveModelId", () => {
     it("resolves alias to model ID", () => {
       expect(resolveModelId("codex")).toBe("gpt-5.4");
+    });
+
+    it("strips Claude Code [1m] context suffix before resolving", () => {
+      expect(resolveModelId("gpt-5.4[1m]")).toBe("gpt-5.4");
     });
 
     it("returns known model ID as-is", () => {
@@ -235,6 +240,29 @@ describe("ModelStore", () => {
       expect(result.modelId).toBe("gpt-5.4");
       expect(result.serviceTier).toBe("flex");
       expect(result.reasoningEffort).toBe("low");
+    });
+  });
+
+  describe("isRecognizedModelName", () => {
+    it("accepts known model IDs with suffixes", () => {
+      expect(isRecognizedModelName("gpt-5.4-low")).toBe(true);
+      expect(isRecognizedModelName("gpt-5.4-high-fast")).toBe(true);
+    });
+
+    it("accepts aliases with suffixes", () => {
+      expect(isRecognizedModelName("codex-high")).toBe(true);
+      expect(isRecognizedModelName("codex-fast")).toBe(true);
+    });
+
+    it("accepts Claude Code [1m] context suffix on known names", () => {
+      expect(isRecognizedModelName("gpt-5.4[1m]")).toBe(true);
+      expect(isRecognizedModelName("codex-high[1m]")).toBe(true);
+    });
+
+    it("rejects unknown model names even with valid-looking suffixes", () => {
+      expect(isRecognizedModelName("totally-unknown")).toBe(false);
+      expect(isRecognizedModelName("totally-unknown-low")).toBe(false);
+      expect(isRecognizedModelName("totally-unknown-high-fast")).toBe(false);
     });
   });
 
