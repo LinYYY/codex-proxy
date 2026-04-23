@@ -281,7 +281,7 @@ export class ModelStore {
   }
 
   parseModelName(input: string): ParsedModelName {
-    const trimmed = input.trim();
+    const trimmed = input.trim().replace(/\[1m\]$/i, "").trim();
 
     if (this.aliases[trimmed] || this.catalog.some((m) => m.id === trimmed)) {
       return { modelId: this.resolveModelId(trimmed), serviceTier: null, reasoningEffort: null };
