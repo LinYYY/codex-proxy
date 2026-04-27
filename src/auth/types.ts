@@ -15,7 +15,10 @@ export interface AccountUsage {
   request_count: number;
   input_tokens: number;
   output_tokens: number;
+  /** Backward-compatible alias for cached prompt tokens. */
   cache_read_input_tokens?: number;
+  /** Cached prompt tokens billed at the discounted rate (subset of input_tokens). */
+  cached_tokens?: number;
   empty_response_count: number;
   last_used: string | null;
   rate_limit_until: string | null;
@@ -27,8 +30,10 @@ export interface AccountUsage {
   window_input_tokens?: number;
   /** Per-window output tokens (resets when window expires). */
   window_output_tokens?: number;
-  /** Per-window cache-read input tokens (resets when window expires). */
+  /** Backward-compatible alias for per-window cached prompt tokens (resets when window expires). */
   window_cache_read_input_tokens?: number;
+  /** Per-window cached prompt tokens (resets when window expires). */
+  window_cached_tokens?: number;
   /** ISO timestamp of when window counters were last reset. */
   window_counters_reset_at?: string | null;
   /** Window duration in seconds, synced from backend, used for local window estimation. */

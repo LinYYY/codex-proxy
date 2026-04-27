@@ -8,6 +8,7 @@ export interface UsageSummary {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cache_read_input_tokens: number;
+  total_cached_tokens: number;
   total_request_count: number;
   total_accounts: number;
   active_accounts: number;
@@ -18,6 +19,7 @@ export interface UsageDataPoint {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
+  cached_tokens: number;
   request_count: number;
 }
 

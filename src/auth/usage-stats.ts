@@ -27,7 +27,10 @@ export interface UsageSnapshot {
   totals: {
     input_tokens: number;
     output_tokens: number;
-    cache_read_input_tokens: number;
+    /** Backward-compatible alias for cached prompt tokens. */
+    cache_read_input_tokens?: number;
+    /** Cached prompt tokens (subset of input_tokens). */
+    cached_tokens?: number;
     request_count: number;
     active_accounts: number;
   };
@@ -36,8 +39,9 @@ export interface UsageSnapshot {
 export interface UsageBaseline {
   input_tokens: number;
   output_tokens: number;
-  cache_read_input_tokens: number;
+  cache_read_input_tokens?: number;
   request_count: number;
+  cached_tokens?: number;
 }
 
 interface UsageHistoryFile {
@@ -51,6 +55,7 @@ export interface UsageDataPoint {
   input_tokens: number;
   output_tokens: number;
   cache_read_input_tokens: number;
+  cached_tokens: number;
   request_count: number;
 }
 
@@ -58,6 +63,7 @@ export interface UsageSummary {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cache_read_input_tokens: number;
+  total_cached_tokens: number;
   total_request_count: number;
   total_accounts: number;
   active_accounts: number;
@@ -67,6 +73,10 @@ export interface UsageSummary {
 
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const HISTORY_FILE = "usage-history.json";
+
+function cachedTokenValue(cacheRead?: number, cached?: number): number {
+  return Math.max(cacheRead ?? 0, cached ?? 0);
+}
 
 // ── Persistence interface (injectable for testing) ─────────────────
 
@@ -124,14 +134,26 @@ export class UsageStatsStore {
       ...snapshot,
       totals: {
         ...snapshot.totals,
-        cache_read_input_tokens: snapshot.totals.cache_read_input_tokens ?? 0,
+        cache_read_input_tokens: cachedTokenValue(
+          snapshot.totals.cache_read_input_tokens,
+          snapshot.totals.cached_tokens,
+        ),
+        cached_tokens: cachedTokenValue(
+          snapshot.totals.cache_read_input_tokens,
+          snapshot.totals.cached_tokens,
+        ),
       },
     }));
+    const baselineCached = cachedTokenValue(
+      loaded.baseline?.cache_read_input_tokens,
+      loaded.baseline?.cached_tokens,
+    );
     this.baseline = {
       input_tokens: loaded.baseline?.input_tokens ?? 0,
       output_tokens: loaded.baseline?.output_tokens ?? 0,
-      cache_read_input_tokens: loaded.baseline?.cache_read_input_tokens ?? 0,
+      cache_read_input_tokens: loaded.baseline ? baselineCached : 0,
       request_count: loaded.baseline?.request_count ?? 0,
+      cached_tokens: loaded.baseline ? baselineCached : 0,
     };
 
     // Recover baseline from last snapshot if it was never persisted.
@@ -144,6 +166,7 @@ export class UsageStatsStore {
         output_tokens: last.output_tokens,
         cache_read_input_tokens: last.cache_read_input_tokens ?? 0,
         request_count: last.request_count,
+        cached_tokens: last.cached_tokens ?? 0,
       };
     }
   }
@@ -161,13 +184,14 @@ export class UsageStatsStore {
       output_tokens: Math.max(0, this._pendingRecovery.output_tokens - live.output_tokens),
       cache_read_input_tokens: Math.max(
         0,
-        this._pendingRecovery.cache_read_input_tokens - live.cache_read_input_tokens,
+        (this._pendingRecovery.cache_read_input_tokens ?? 0) - live.cache_read_input_tokens,
       ),
       request_count: Math.max(0, this._pendingRecovery.request_count - live.request_count),
+      cached_tokens: Math.max(0, (this._pendingRecovery.cached_tokens ?? 0) - live.cached_tokens),
     };
     this._pendingRecovery = undefined;
     this.persistence.save({ version: 1, snapshots: this.snapshots, baseline: this.baseline });
-    console.log(`[UsageStats] Recovered baseline: ${this.baseline.input_tokens} in / ${this.baseline.output_tokens} out / ${this.baseline.request_count} req`);
+    console.log(`[UsageStats] Recovered baseline: ${this.baseline.input_tokens} in / ${this.baseline.output_tokens} out / ${this.baseline.request_count} req / ${this.baseline.cached_tokens ?? 0} cached`);
   }
 
   /** Sum current live usage from all accounts in the pool. */
@@ -175,6 +199,7 @@ export class UsageStatsStore {
     input_tokens: number;
     output_tokens: number;
     cache_read_input_tokens: number;
+    cached_tokens: number;
     request_count: number;
     active_accounts: number;
     total_accounts: number;
@@ -183,13 +208,16 @@ export class UsageStatsStore {
     let input_tokens = 0;
     let output_tokens = 0;
     let cache_read_input_tokens = 0;
+    let cached_tokens = 0;
     let request_count = 0;
     let active_accounts = 0;
 
     for (const entry of entries) {
       input_tokens += entry.usage.input_tokens;
       output_tokens += entry.usage.output_tokens;
-      cache_read_input_tokens += entry.usage.cache_read_input_tokens ?? 0;
+      const cached = cachedTokenValue(entry.usage.cache_read_input_tokens, entry.usage.cached_tokens);
+      cache_read_input_tokens += cached;
+      cached_tokens += cached;
       request_count += entry.usage.request_count;
       if (entry.status === "active") active_accounts++;
     }
@@ -198,6 +226,7 @@ export class UsageStatsStore {
       input_tokens,
       output_tokens,
       cache_read_input_tokens,
+      cached_tokens,
       request_count,
       active_accounts,
       total_accounts: entries.length,
@@ -213,24 +242,29 @@ export class UsageStatsStore {
     // the difference was lost usage from removed accounts — absorb into baseline.
     const lastSnapshot = this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : null;
     if (lastSnapshot) {
+      const baselineCached = this.baseline.cached_tokens ?? 0;
+      const lastCached = lastSnapshot.totals.cached_tokens ?? 0;
       const prevLive = {
         input_tokens: lastSnapshot.totals.input_tokens - this.baseline.input_tokens,
         output_tokens: lastSnapshot.totals.output_tokens - this.baseline.output_tokens,
         cache_read_input_tokens:
-          (lastSnapshot.totals.cache_read_input_tokens ?? 0) - this.baseline.cache_read_input_tokens,
+          (lastSnapshot.totals.cache_read_input_tokens ?? 0) - (this.baseline.cache_read_input_tokens ?? 0),
         request_count: lastSnapshot.totals.request_count - this.baseline.request_count,
+        cached_tokens: lastCached - baselineCached,
       };
       if (live.input_tokens < prevLive.input_tokens ||
           live.output_tokens < prevLive.output_tokens ||
           live.cache_read_input_tokens < prevLive.cache_read_input_tokens ||
-          live.request_count < prevLive.request_count) {
+          live.request_count < prevLive.request_count ||
+          live.cached_tokens < prevLive.cached_tokens) {
         this.baseline = {
           input_tokens: this.baseline.input_tokens + Math.max(0, prevLive.input_tokens - live.input_tokens),
           output_tokens: this.baseline.output_tokens + Math.max(0, prevLive.output_tokens - live.output_tokens),
           cache_read_input_tokens:
-            this.baseline.cache_read_input_tokens +
+            (this.baseline.cache_read_input_tokens ?? 0) +
             Math.max(0, prevLive.cache_read_input_tokens - live.cache_read_input_tokens),
           request_count: this.baseline.request_count + Math.max(0, prevLive.request_count - live.request_count),
+          cached_tokens: baselineCached + Math.max(0, prevLive.cached_tokens - live.cached_tokens),
         };
       }
     }
@@ -241,7 +275,8 @@ export class UsageStatsStore {
       totals: {
         input_tokens: this.baseline.input_tokens + live.input_tokens,
         output_tokens: this.baseline.output_tokens + live.output_tokens,
-        cache_read_input_tokens: this.baseline.cache_read_input_tokens + live.cache_read_input_tokens,
+        cache_read_input_tokens: (this.baseline.cache_read_input_tokens ?? 0) + live.cache_read_input_tokens,
+        cached_tokens: (this.baseline.cached_tokens ?? 0) + live.cached_tokens,
         request_count: this.baseline.request_count + live.request_count,
         active_accounts: live.active_accounts,
       },
@@ -263,7 +298,8 @@ export class UsageStatsStore {
     return {
       total_input_tokens: this.baseline.input_tokens + live.input_tokens,
       total_output_tokens: this.baseline.output_tokens + live.output_tokens,
-      total_cache_read_input_tokens: this.baseline.cache_read_input_tokens + live.cache_read_input_tokens,
+      total_cache_read_input_tokens: (this.baseline.cache_read_input_tokens ?? 0) + live.cache_read_input_tokens,
+      total_cached_tokens: (this.baseline.cached_tokens ?? 0) + live.cached_tokens,
       total_request_count: this.baseline.request_count + live.request_count,
       total_accounts: live.total_accounts,
       active_accounts: live.active_accounts,
@@ -299,6 +335,7 @@ export class UsageStatsStore {
           0,
           (curr.cache_read_input_tokens ?? 0) - (prev.cache_read_input_tokens ?? 0),
         ),
+        cached_tokens: Math.max(0, (curr.cached_tokens ?? 0) - (prev.cached_tokens ?? 0)),
         request_count: Math.max(0, curr.request_count - prev.request_count),
       });
     }
@@ -335,6 +372,7 @@ function bucketize(deltas: UsageDataPoint[], bucketMs: number): UsageDataPoint[]
       existing.input_tokens += d.input_tokens;
       existing.output_tokens += d.output_tokens;
       existing.cache_read_input_tokens += d.cache_read_input_tokens;
+      existing.cached_tokens += d.cached_tokens;
       existing.request_count += d.request_count;
     } else {
       buckets.set(bucketKey, {
@@ -342,6 +380,7 @@ function bucketize(deltas: UsageDataPoint[], bucketMs: number): UsageDataPoint[]
         input_tokens: d.input_tokens,
         output_tokens: d.output_tokens,
         cache_read_input_tokens: d.cache_read_input_tokens,
+        cached_tokens: d.cached_tokens,
         request_count: d.request_count,
       });
     }

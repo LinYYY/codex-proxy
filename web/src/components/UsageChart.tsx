@@ -42,6 +42,10 @@ function formatTime(iso: string): string {
   return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
+function cachedTokensOf(point: UsageDataPoint): number {
+  return Math.max(point.cached_tokens ?? 0, point.cache_read_input_tokens ?? 0);
+}
+
 function ChartTooltip({
   anchorX,
   anchorY,
@@ -112,13 +116,13 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
   const chartH = height - PADDING.top - PADDING.bottom;
   const reqChartH = reqHeight - PADDING.top - PADDING.bottom;
 
-  const { points, inputPoints, outputPoints, cacheReadPoints, requestPoints, xLabels, yTokenLabels, yReqLabels } = useMemo(() => {
+  const { points, inputPoints, outputPoints, cachedPoints, requestPoints, xLabels, yTokenLabels, yReqLabels } = useMemo(() => {
     if (data.length === 0) {
       return {
         points: [] as ChartPoint[],
         inputPoints: "",
         outputPoints: "",
-        cacheReadPoints: "",
+        cachedPoints: "",
         requestPoints: "",
         xLabels: [] as Array<{ x: number; label: string }>,
         yTokenLabels: [] as Array<{ y: number; label: string }>,
@@ -128,8 +132,8 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
 
     const maxInput = Math.max(...data.map((d) => d.input_tokens));
     const maxOutput = Math.max(...data.map((d) => d.output_tokens));
-    const maxCacheRead = Math.max(...data.map((d) => d.cache_read_input_tokens ?? 0));
-    const yMaxT = Math.max(maxInput, maxOutput, maxCacheRead, 1);
+    const maxCached = Math.max(...data.map(cachedTokensOf));
+    const yMaxT = Math.max(maxInput, maxOutput, maxCached, 1);
     const yMaxR = Math.max(...data.map((d) => d.request_count), 1);
 
     const toX = (i: number) => data.length === 1
@@ -143,13 +147,13 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
       x: toX(i),
       inputY: toYTokens(d.input_tokens),
       outputY: toYTokens(d.output_tokens),
-      cacheReadY: toYTokens(d.cache_read_input_tokens ?? 0),
+      cacheReadY: toYTokens(cachedTokensOf(d)),
       requestY: toYReqs(d.request_count),
     }));
 
     const inp = computedPoints.map((point) => `${point.x},${point.inputY}`).join(" ");
     const out = computedPoints.map((point) => `${point.x},${point.outputY}`).join(" ");
-    const cache = computedPoints.map((point) => `${point.x},${point.cacheReadY}`).join(" ");
+    const cached = computedPoints.map((point) => `${point.x},${point.cacheReadY}`).join(" ");
     const req = computedPoints.map((point) => `${point.x},${point.requestY}`).join(" ");
 
     const step = Math.max(1, Math.floor(data.length / 5));
@@ -174,7 +178,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
       points: computedPoints,
       inputPoints: inp,
       outputPoints: out,
-      cacheReadPoints: cache,
+      cachedPoints: cached,
       requestPoints: req,
       xLabels: xl,
       yTokenLabels: yTL,
@@ -203,7 +207,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
             <span class="inline-block w-3 h-0.5 bg-emerald-500 rounded" /> Output Tokens
           </span>
           <span class="flex items-center gap-1">
-            <span class="inline-block w-3 h-0.5 rounded" style={{ backgroundColor: "var(--chart-violet)" }} /> Cache Read
+            <span class="inline-block w-3 h-0.5 rounded" style={{ backgroundColor: "var(--chart-violet)" }} /> Cached Tokens
           </span>
         </div>
         <svg
@@ -277,7 +281,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
             stroke-linejoin="round"
           />
           <polyline
-            points={cacheReadPoints}
+            points={cachedPoints}
             fill="none"
             stroke="var(--chart-violet)"
             stroke-width="2"
@@ -339,7 +343,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
               lines={[
                 { label: "Input Tokens", value: formatExactNumber(activePoint.input_tokens), color: "var(--chart-blue)" },
                 { label: "Output Tokens", value: formatExactNumber(activePoint.output_tokens), color: "var(--chart-green)" },
-                { label: "Cache Read", value: formatExactNumber(activePoint.cache_read_input_tokens), color: "var(--chart-violet)" },
+                { label: "Cached Tokens", value: formatExactNumber(cachedTokensOf(activePoint)), color: "var(--chart-violet)" },
                 { label: "Requests", value: formatExactNumber(activePoint.request_count), color: "var(--chart-amber)" },
               ]}
             />
@@ -456,7 +460,7 @@ export function UsageChart({ data, height = 260 }: UsageChartProps) {
                 { label: "Requests", value: formatExactNumber(activePoint.request_count), color: "var(--chart-amber)" },
                 { label: "Input Tokens", value: formatExactNumber(activePoint.input_tokens), color: "var(--chart-blue)" },
                 { label: "Output Tokens", value: formatExactNumber(activePoint.output_tokens), color: "var(--chart-green)" },
-                { label: "Cache Read", value: formatExactNumber(activePoint.cache_read_input_tokens), color: "var(--chart-violet)" },
+                { label: "Cached Tokens", value: formatExactNumber(cachedTokensOf(activePoint)), color: "var(--chart-violet)" },
               ]}
             />
           )}

@@ -8,8 +8,22 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Ollama bridge cleanup（#403 review followups, closes #405 #406 #407）：
+  - `src/ollama/bridge.ts` 不再重复实现 `normalizeHostname` / `isLoopbackHostname`，统一从 `src/utils/host.ts` 引入；`shared/utils/host.ts` 改为薄 re-export 以兼容前端的现有 import (#405)
+  - `proxyOpenAIRequest` 转发头扩展到 `Content-Type` / `Accept` / `User-Agent` / `X-Request-Id` / `traceparent` / `tracestate`（#403 review #2）；`/v1/*` 路径剥离改用 `path.replace(/^\/v1/, "")` 替代 `slice(3)`
+  - `MAX_SSE_BUFFER` 重命名为 `MAX_SSE_BUFFER_CHARS` 并补注释，明确比较的是 String 的 UTF-16 code unit 数（#403 review #3）
+  - `src/config-loader.ts` 5 段 `if (!raw.ollama) raw.ollama = {}` 合并为开头一次性兜底（#403 review #4）
+  - `getOllamaBridgeStatus(config?)` 拆成 `getOllamaBridgeRuntimeStatus()` 与 `getOllamaBridgeStatusForConfig(config)`，调用方按需选择（#403 review #5）
+  - `POST /admin/ollama-settings` 移除多余的 `checkApiKey`，与其他 admin POST 一致由 `dashboardAuth` 中间件统一鉴权（#406）
+  - 删除根目录开发日志 `OLLAMA_BRIDGE_INTEGRATION.md`（Phase 1/2 scope 已并入 CHANGELOG，git 历史保留原文）
+
 ### Added
 
+- Dashboard 用量统计新增「缓存命中率」卡片：聚合所有账号 `cached_tokens / input_tokens` 比例，附带绝对值提示。后端 `AccountUsage` 与 `UsageSnapshot` 持久化 cached tokens（含 window 维度），`/admin/usage-stats/summary` 与 `/history` 同步暴露 `total_cached_tokens` / `cached_tokens` 字段；老数据以 0 兜底
+- 发版流程引入 `dev` 分支 + beta channel：`bump-electron-beta.yml` 在 dev push 时打 `vX.Y.Z-beta.SHA` tag 出预发布包；`promote-dev-to-master.yml` 每天 14:00 UTC 检查 dev soak ≥24h + CI 绿后 fast-forward 到 master，再由现有 `bump-electron.yml` 出 stable tag (`.github/workflows/`)
+- `update.allow_prerelease` 配置项（默认 `false`）：开启后本地 Electron 通过 electron-updater 接收 beta channel 推送的预发布版本，便于自己的安装实测 dev 改动 (`src/config-schema.ts`、`packages/electron/electron/auto-updater.ts`、`config/default.yaml`)
 - `config/models.yaml`: `gpt-5.5` (Plus-only general-purpose chat) and `gpt-image-2` (Plus-only image-generation backend) entered the static catalog
 - `CodexModelInfo.outputModalities` optional field on the model catalog interface to flag image-gen models apart from chat models (`src/models/model-store.ts`, `BackendModelEntry.output_modalities` also added for backend passthrough). `/v1/models/catalog` defaults missing values to `["text"]` so API output matches the documented contract.
 - README 新增图像生成小节 + 模型表 Output 列；`API.md` / `API_CN.md` 补 `image_generation` 工具参数矩阵、事件流、编辑模式文档
@@ -21,6 +35,14 @@
 
 ### Fixed
 
+- 上游返回 `previous_response_not_found`（response 由别的账号创建 / `SessionAffinityMap` 过期或重启丢失 / 跨账号轮转）时端到端恢复：
+  - `ws-transport.ts:36` `ROTATABLE_ERROR_CODES` 增补 `previous_response_not_found: 400`，让 WS 首帧 in-stream error 转成 `CodexApiError` reject —— 之前因为不在白名单里直接被流式透传到客户端，绕过了 catch
+  - `proxy-handler.ts` catch 块新增 strip-and-retry：剥掉 `previous_response_id` + `turnState`，在同一账号上重试一次，并把 ID 从 affinity map 清掉防止后续请求继续命中错路由；重试仍失败时降级返回原错误
+  - 隐式续链场景通过已有的 `restoreImplicitResumeRequest()` 路径回放完整 input，无损恢复；显式续链（客户端传 `previous_response_id`）会丢服务端历史，但请求仍能完成
+  - 新增分类器 `isPreviousResponseNotFoundError` + `SessionAffinityMap.forget()`（`src/proxy/error-classification.ts`、`src/auth/session-affinity.ts`、`src/routes/shared/proxy-handler.ts`、`src/proxy/ws-transport.ts`）
+- `release.yml` 让 electron-builder 用 tag 名当版本（`--config.extraMetadata.version="${TAG#v}"`），不再依赖 `package.json`。修复 `bump-electron-beta.yml` 故意不写 `package.json` 时 beta 包被跳过上传的问题（"existing type not compatible with publishing type"）；同步在 `release` job 给 prerelease tag 兜底 `--prerelease` flag (#413)
+- `release.yml` 的 `Pack` 步骤强制 `shell: bash`，让 Windows runner（默认 pwsh）正确解析 bash 多行续行符 `\` (#414)
+- WebSocket 路径首帧若为上游 `usage_limit_reached` / `rate_limit*` / `quota_exhausted` / 鉴权类终止错误，转换为 `CodexApiError` 抛出，复用 HTTP 路径已有的账号轮转逻辑；恢复 2.0.62 的"智能切换"行为（`src/proxy/ws-transport.ts`）。错误若发生在已有内容流出之后，仍按当前行为透传给客户端
 - 无可用账号时不再执行无意义的重试，直接返回描述性错误信息（含各状态账号计数：rate-limited / expired / banned / disabled）(#362)
 - API Key 路由（OpenAI/Anthropic/Gemini）上游返回错误时，透传原始 JSON 响应体，而非包装为代理自有格式；Codex 账号路由仍使用代理格式 (#367)
 - 修复 General Settings 保存后 `max_concurrent_per_account` / `request_interval_ms` 未回填到前端状态，导致页面看起来退回默认值但后端实际已生效的问题
